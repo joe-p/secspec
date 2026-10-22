@@ -1,0 +1,72 @@
+package github
+
+import (
+	"context"
+	"encoding/json"
+	"net/url"
+	"strconv"
+)
+
+// Ruleset is a repository ruleset as returned by the GitHub API.
+type Ruleset struct {
+	ID         int64
+	Name       string
+	SourceType string
+	Raw        map[string]any
+}
+
+// ListOrgRepos returns the full names ("owner/repo") of every repository in an
+// organization, following pagination.
+func (c *Client) ListOrgRepos(ctx context.Context, org string) ([]string, error) {
+	var all []string
+	for page := 1; ; page++ {
+		var repos []struct {
+			FullName string `json:"full_name"`
+		}
+		q := url.Values{
+			"per_page": {"100"},
+			"page":     {strconv.Itoa(page)},
+		}
+		if err := c.get(ctx, "/orgs/"+url.PathEscape(org)+"/repos", q, &repos); err != nil {
+			return nil, err
+		}
+		if len(repos) == 0 {
+			break
+		}
+		for _, r := range repos {
+			if r.FullName != "" {
+				all = append(all, r.FullName)
+			}
+		}
+		if len(repos) < 100 {
+			break
+		}
+	}
+	return all, nil
+}
+
+// ListRulesets returns every ruleset visible on a repository.
+func (c *Client) ListRulesets(ctx context.Context, owner, repo string) ([]Ruleset, error) {
+	path := "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) + "/rulesets"
+	var raw []map[string]any
+	if err := c.get(ctx, path, nil, &raw); err != nil {
+		return nil, err
+	}
+	out := make([]Ruleset, 0, len(raw))
+	for _, m := range raw {
+		rs := Ruleset{Raw: m}
+		if n, ok := m["name"].(string); ok {
+			rs.Name = n
+		}
+		if s, ok := m["source_type"].(string); ok {
+			rs.SourceType = s
+		}
+		if id, ok := m["id"].(json.Number); ok {
+			if v, err := id.Int64(); err == nil {
+				rs.ID = v
+			}
+		}
+		out = append(out, rs)
+	}
+	return out, nil
+}
