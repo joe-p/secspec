@@ -1,5 +1,5 @@
-// Package engine resolves spec targets against live services and produces a
-// report of every setting that does not match.
+// Package engine resolves spec targets against live services and applies or
+// audits the desired settings.
 package engine
 
 import (
@@ -41,80 +41,229 @@ func Run(ctx context.Context, s *spec.Spec, opts Options) (*report.Report, error
 	rep := &report.Report{}
 
 	if len(s.GitHub) > 0 {
-		if opts.GitHubToken == "" {
-			return nil, errors.New("spec defines github settings but no GitHub token is set (use GH_TOKEN, GITHUB_TOKEN, or --github-token)")
-		}
-		client := github.NewClient(opts.GitHubToken)
-		if opts.GitHubBaseURL != "" {
-			client.BaseURL = opts.GitHubBaseURL
-		}
-		if err := runGitHub(ctx, client, s.GitHub, rep); err != nil {
+		client, err := githubClient(opts)
+		if err != nil {
 			return nil, err
+		}
+		targets, err := resolveGitHub(ctx, client, s.GitHub)
+		if err != nil {
+			return nil, err
+		}
+		for _, repo := range targets.repos {
+			owner, name, _ := strings.Cut(repo, "/")
+			actual, err := client.ListRulesets(ctx, owner, name)
+			if err != nil {
+				return nil, fmt.Errorf("list rulesets for %s: %w", repo, err)
+			}
+			rep.TargetsScanned++
+			rep.Add(github.DiffRulesets(repo, mapValues(targets.byRepo[repo]), actual)...)
 		}
 	}
 
 	if len(s.NPM) > 0 {
-		if opts.NPMToken == "" {
-			return nil, errors.New("spec defines npm settings but no npm token is set (use NPM_TOKEN or --npm-token)")
-		}
-		client := npm.NewClient(opts.NPMToken, opts.NPMOTP)
-		client.OnOTPRequired = opts.NPMOTPPrompt
-		if opts.NPMRegistry != "" {
-			client.Registry = opts.NPMRegistry
-		}
-		if err := runNPM(ctx, client, s.NPM, rep); err != nil {
+		client, err := npmClient(opts)
+		if err != nil {
 			return nil, err
+		}
+		targets, err := resolveNPM(ctx, client, s.NPM)
+		if err != nil {
+			return nil, err
+		}
+		for _, pkg := range targets.pkgs {
+			actual, err := client.ListTrust(ctx, pkg)
+			if err != nil {
+				return nil, fmt.Errorf("list trust for %s: %w", pkg, err)
+			}
+			defaultRepo, err := defaultRepoFor(ctx, client, pkg, targets.byPkg[pkg])
+			if err != nil {
+				return nil, err
+			}
+			rep.TargetsScanned++
+			rep.Add(npm.DiffTrust(pkg, targets.byPkg[pkg], actual, defaultRepo)...)
 		}
 	}
 
 	return rep, nil
 }
 
-func runGitHub(ctx context.Context, client *github.Client, groups []spec.GitHubGroup, rep *report.Report) error {
-	desired := map[string]map[string]map[string]any{}
+// Apply writes the spec to the live services. It creates settings that are
+// missing and updates those that do not match, but never deletes settings that
+// are absent from the spec.
+func Apply(ctx context.Context, s *spec.Spec, opts Options) (*report.WriteReport, error) {
+	wr := &report.WriteReport{}
+
+	if len(s.GitHub) > 0 {
+		client, err := githubClient(opts)
+		if err != nil {
+			return nil, err
+		}
+		targets, err := resolveGitHub(ctx, client, s.GitHub)
+		if err != nil {
+			return nil, err
+		}
+		if err := applyGitHub(ctx, client, targets, wr); err != nil {
+			return nil, err
+		}
+	}
+
+	if len(s.NPM) > 0 {
+		client, err := npmClient(opts)
+		if err != nil {
+			return nil, err
+		}
+		targets, err := resolveNPM(ctx, client, s.NPM)
+		if err != nil {
+			return nil, err
+		}
+		if err := applyNPM(ctx, client, targets, wr); err != nil {
+			return nil, err
+		}
+	}
+
+	return wr, nil
+}
+
+func applyGitHub(ctx context.Context, client *github.Client, targets *githubTargets, wr *report.WriteReport) error {
+	for _, repo := range targets.repos {
+		owner, name, _ := strings.Cut(repo, "/")
+		actual, err := client.ListRulesets(ctx, owner, name)
+		if err != nil {
+			return fmt.Errorf("list rulesets for %s: %w", repo, err)
+		}
+		byName := make(map[string]github.Ruleset, len(actual))
+		for _, a := range actual {
+			byName[a.Name] = a
+		}
+
+		for _, desired := range mapValues(targets.byRepo[repo]) {
+			rsName, _ := desired["name"].(string)
+			setting := fmt.Sprintf("ruleset %q", rsName)
+
+			a, exists := byName[rsName]
+			switch {
+			case !exists:
+				if err := client.CreateRuleset(ctx, owner, name, desired); err != nil {
+					return fmt.Errorf("create ruleset %q on %s: %w", rsName, repo, err)
+				}
+				wr.Add(report.Action{Provider: "github", Target: repo, Setting: setting, Action: "created"})
+			case a.SourceType != "" && a.SourceType != "Repository":
+				return fmt.Errorf("ruleset %q on %s is defined at the %s level and cannot be managed here", rsName, repo, a.SourceType)
+			case github.RulesetMatches(desired, a):
+				wr.Add(report.Action{Provider: "github", Target: repo, Setting: setting, Action: "unchanged"})
+			default:
+				if err := client.UpdateRuleset(ctx, owner, name, a.ID, desired); err != nil {
+					return fmt.Errorf("update ruleset %q on %s: %w", rsName, repo, err)
+				}
+				wr.Add(report.Action{Provider: "github", Target: repo, Setting: setting, Action: "updated"})
+			}
+		}
+	}
+	return nil
+}
+
+func applyNPM(ctx context.Context, client *npm.Client, targets *npmTargets, wr *report.WriteReport) error {
+	for _, pkg := range targets.pkgs {
+		actual, err := client.ListTrust(ctx, pkg)
+		if err != nil {
+			return fmt.Errorf("list trust for %s: %w", pkg, err)
+		}
+		defaultRepo, err := defaultRepoFor(ctx, client, pkg, targets.byPkg[pkg])
+		if err != nil {
+			return err
+		}
+
+		for i, desired := range targets.byPkg[pkg] {
+			typ, _ := desired["type"].(string)
+			setting := fmt.Sprintf("trust[%d] (%s)", i, typ)
+
+			config, ok := npm.PrepareTrustConfig(desired, defaultRepo)
+			if !ok {
+				return fmt.Errorf("trust[%d] (%s) on %s omits claims.repository and %s has no usable repository url", i, typ, pkg, pkg)
+			}
+
+			matched := false
+			for _, a := range actual {
+				if npm.TrustMatches(config, a) {
+					matched = true
+					break
+				}
+			}
+			if matched {
+				wr.Add(report.Action{Provider: "npm", Target: pkg, Setting: setting, Action: "unchanged"})
+				continue
+			}
+			if err := client.AddTrust(ctx, pkg, config); err != nil {
+				return fmt.Errorf("add %s on %s: %w", setting, pkg, err)
+			}
+			wr.Add(report.Action{Provider: "npm", Target: pkg, Setting: setting, Action: "created"})
+		}
+	}
+	return nil
+}
+
+func githubClient(opts Options) (*github.Client, error) {
+	if opts.GitHubToken == "" {
+		return nil, errors.New("spec defines github settings but no GitHub token is set (use GH_TOKEN, GITHUB_TOKEN, or --github-token)")
+	}
+	client := github.NewClient(opts.GitHubToken)
+	if opts.GitHubBaseURL != "" {
+		client.BaseURL = opts.GitHubBaseURL
+	}
+	return client, nil
+}
+
+func npmClient(opts Options) (*npm.Client, error) {
+	if opts.NPMToken == "" {
+		return nil, errors.New("spec defines npm settings but no npm token is set (use NPM_TOKEN or --npm-token)")
+	}
+	client := npm.NewClient(opts.NPMToken, opts.NPMOTP)
+	client.OnOTPRequired = opts.NPMOTPPrompt
+	if opts.NPMRegistry != "" {
+		client.Registry = opts.NPMRegistry
+	}
+	return client, nil
+}
+
+// githubTargets is the resolved set of repositories and the rulesets to apply
+// to each.
+type githubTargets struct {
+	repos  []string
+	byRepo map[string]map[string]map[string]any // repo -> ruleset name -> ruleset
+}
+
+func resolveGitHub(ctx context.Context, client *github.Client, groups []spec.GitHubGroup) (*githubTargets, error) {
+	byRepo := map[string]map[string]map[string]any{}
 	var order []string
 
 	for _, g := range groups {
 		repos, err := resolveGitHubTargets(ctx, client, g.IncludeRepos)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		rulesets, err := decodeObjects(g.Rulesets)
 		if err != nil {
-			return fmt.Errorf("github rulesets: %w", err)
+			return nil, fmt.Errorf("github rulesets: %w", err)
 		}
 		for _, repo := range repos {
-			if _, ok := desired[repo]; !ok {
-				desired[repo] = map[string]map[string]any{}
+			if _, ok := byRepo[repo]; !ok {
+				byRepo[repo] = map[string]map[string]any{}
 				order = append(order, repo)
 			}
 			for _, rs := range rulesets {
 				name, _ := rs["name"].(string)
-				if existing, ok := desired[repo][name]; ok {
+				if existing, ok := byRepo[repo][name]; ok {
 					if canonical(existing) != canonical(rs) {
-						return fmt.Errorf("conflicting definitions for ruleset %q on %s", name, repo)
+						return nil, fmt.Errorf("conflicting definitions for ruleset %q on %s", name, repo)
 					}
 					continue
 				}
-				desired[repo][name] = rs
+				byRepo[repo][name] = rs
 			}
 		}
 	}
 
 	sort.Strings(order)
-	for _, repo := range order {
-		owner, name, ok := strings.Cut(repo, "/")
-		if !ok {
-			return fmt.Errorf("invalid repository %q", repo)
-		}
-		actual, err := client.ListRulesets(ctx, owner, name)
-		if err != nil {
-			return fmt.Errorf("list rulesets for %s: %w", repo, err)
-		}
-		rep.TargetsScanned++
-		rep.Add(github.DiffRulesets(repo, mapValues(desired[repo]), actual)...)
-	}
-	return nil
+	return &githubTargets{repos: order, byRepo: byRepo}, nil
 }
 
 func resolveGitHubTargets(ctx context.Context, client *github.Client, patterns []string) ([]string, error) {
@@ -141,44 +290,36 @@ func resolveGitHubTargets(ctx context.Context, client *github.Client, patterns [
 	return sortedKeys(found), nil
 }
 
-func runNPM(ctx context.Context, client *npm.Client, groups []spec.NPMGroup, rep *report.Report) error {
-	desired := map[string][]map[string]any{}
+// npmTargets is the resolved set of packages and the trust configurations to
+// apply to each.
+type npmTargets struct {
+	pkgs  []string
+	byPkg map[string][]map[string]any
+}
+
+func resolveNPM(ctx context.Context, client *npm.Client, groups []spec.NPMGroup) (*npmTargets, error) {
+	byPkg := map[string][]map[string]any{}
 	var order []string
 
 	for _, g := range groups {
 		pkgs, err := resolveNPMTargets(ctx, client, g.IncludePackages)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		trust, err := decodeObjects(g.Trust)
 		if err != nil {
-			return fmt.Errorf("npm trust: %w", err)
+			return nil, fmt.Errorf("npm trust: %w", err)
 		}
 		for _, pkg := range pkgs {
-			if _, ok := desired[pkg]; !ok {
+			if _, ok := byPkg[pkg]; !ok {
 				order = append(order, pkg)
 			}
-			desired[pkg] = appendUnique(desired[pkg], trust)
+			byPkg[pkg] = appendUnique(byPkg[pkg], trust)
 		}
 	}
 
 	sort.Strings(order)
-	for _, pkg := range order {
-		actual, err := client.ListTrust(ctx, pkg)
-		if err != nil {
-			return fmt.Errorf("list trust for %s: %w", pkg, err)
-		}
-		defaultRepo := ""
-		if needsDefaultRepo(desired[pkg]) {
-			defaultRepo, err = client.PackageRepo(ctx, pkg)
-			if err != nil {
-				return fmt.Errorf("read package.json for %s: %w", pkg, err)
-			}
-		}
-		rep.TargetsScanned++
-		rep.Add(npm.DiffTrust(pkg, desired[pkg], actual, defaultRepo)...)
-	}
-	return nil
+	return &npmTargets{pkgs: order, byPkg: byPkg}, nil
 }
 
 func resolveNPMTargets(ctx context.Context, client *npm.Client, patterns []string) ([]string, error) {
@@ -204,6 +345,19 @@ func resolveNPMTargets(ctx context.Context, client *npm.Client, patterns []strin
 		}
 	}
 	return sortedKeys(found), nil
+}
+
+// defaultRepoFor returns the "owner/repo" to use for trust configs that omit
+// claims.repository. It is only fetched when at least one config needs it.
+func defaultRepoFor(ctx context.Context, client *npm.Client, pkg string, desired []map[string]any) (string, error) {
+	if !needsDefaultRepo(desired) {
+		return "", nil
+	}
+	repo, err := client.PackageRepo(ctx, pkg)
+	if err != nil {
+		return "", fmt.Errorf("read package.json for %s: %w", pkg, err)
+	}
+	return repo, nil
 }
 
 func needsDefaultRepo(desired []map[string]any) bool {

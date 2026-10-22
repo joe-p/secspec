@@ -3,6 +3,8 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 )
@@ -69,4 +71,16 @@ func (c *Client) ListRulesets(ctx context.Context, owner, repo string) ([]Rulese
 		out = append(out, rs)
 	}
 	return out, nil
+}
+
+// CreateRuleset creates a repository ruleset from the given body.
+func (c *Client) CreateRuleset(ctx context.Context, owner, repo string, body map[string]any) error {
+	path := "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) + "/rulesets"
+	return c.do(ctx, http.MethodPost, path, nil, body, nil)
+}
+
+// UpdateRuleset replaces a repository ruleset by id with the given body.
+func (c *Client) UpdateRuleset(ctx context.Context, owner, repo string, id int64, body map[string]any) error {
+	path := fmt.Sprintf("/repos/%s/%s/rulesets/%d", url.PathEscape(owner), url.PathEscape(repo), id)
+	return c.do(ctx, http.MethodPut, path, nil, body, nil)
 }

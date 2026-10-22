@@ -59,16 +59,36 @@ func (c *Client) httpClient() *http.Client {
 }
 
 func (c *Client) get(ctx context.Context, path string, query url.Values, out any) error {
+	return c.do(ctx, http.MethodGet, path, query, nil, out)
+}
+
+func (c *Client) do(ctx context.Context, method, path string, query url.Values, body, out any) error {
 	u := strings.TrimRight(c.BaseURL, "/") + path
 	if len(query) > 0 {
 		u += "?" + query.Encode()
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+
+	var payload []byte
+	if body != nil {
+		var err error
+		if payload, err = json.Marshal(body); err != nil {
+			return err
+		}
+	}
+
+	var reader io.Reader
+	if payload != nil {
+		reader = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u, reader)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", APIVersion)
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	if c.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
 	}
@@ -83,7 +103,7 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, out any
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &APIError{StatusCode: resp.StatusCode, Method: http.MethodGet, URL: u, Body: strings.TrimSpace(string(data))}
+		return &APIError{StatusCode: resp.StatusCode, Method: method, URL: u, Body: strings.TrimSpace(string(data))}
 	}
 	if out != nil {
 		dec := json.NewDecoder(bytes.NewReader(data))

@@ -12,9 +12,13 @@ The desired settings are specified in a JSON file, `secspec.json` by default. Wh
 
 `secspec audit` - ensures settings match the `secspec.json`, but does not write anything. This will return ALL mismatches and return a non-zero exit code for one or more mismatches.
 `secspec diff` - returns any settings specified in the `secspec.json` that do not match their expected value. This will always return a zero status unless there is an internal error.
-`secspec write` - write the settings defined in `secspec.json` to the respective packages/repositories. **Not implemented yet.**
+`secspec write` - creates settings that are missing and updates those that do not match the `secspec.json`. It never deletes settings that are absent from the spec.
 
-Both read-only commands accept `--json` for a machine-readable report and `--spec <path>` to override the spec location.
+Both read-only commands accept `--json` for a machine-readable report and `--spec <path>` to override the spec location; `write` accepts the same flags.
+
+### Write behaviour
+
+`write` matches settings by identity — GitHub rulesets by `name`, npm trust configurations by `type` plus claims. Missing ones are created and mismatched ones are replaced with the spec's fields; extra live settings are left untouched. GitHub `PUT` replaces the ruleset with the fields in the spec, so unspecified fields revert to their defaults. An existing ruleset defined at the organization or enterprise level is reported as an error rather than modified. For npm, the API requires `claims.repository`, so it is filled from the package's `package.json` when omitted, and the write fails if it cannot be resolved. npm trust writes are 2FA-gated and use the same interactive prompt described below.
 
 ### Authentication
 

@@ -7,6 +7,12 @@ import (
 	"github.com/joe-p/secspec/internal/report"
 )
 
+// RulesetMatches reports whether a live ruleset already satisfies a desired
+// ruleset: every field the desired ruleset specifies must match.
+func RulesetMatches(desired map[string]any, actual Ruleset) bool {
+	return len(jsonutil.SubsetDiff(desired, actual.Raw)) == 0
+}
+
 // DiffRulesets compares desired rulesets (decoded spec entries) against the
 // rulesets that currently exist on a repository. Rulesets are matched by name.
 func DiffRulesets(repo string, desired []map[string]any, actual []Ruleset) []report.Change {

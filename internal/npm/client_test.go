@@ -2,6 +2,7 @@ package npm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -140,6 +141,70 @@ func TestDoNoPromptOnOtherErrors(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&prompts); got != 0 {
 		t.Errorf("prompts = %d, want 0", got)
+	}
+}
+
+func TestAddTrustPostsArray(t *testing.T) {
+	var method, uri string
+	var body []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, uri = r.Method, r.URL.RequestURI()
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient("tok", "")
+	c.Registry = srv.URL
+	config := map[string]any{
+		"type":        "github",
+		"claims":      map[string]any{"repository": "o/r"},
+		"permissions": []any{"createPackage"},
+	}
+	if err := c.AddTrust(context.Background(), "@s/p", config); err != nil {
+		t.Fatalf("AddTrust: %v", err)
+	}
+	if method != http.MethodPost {
+		t.Errorf("method = %s, want POST", method)
+	}
+	if uri != "/-/package/@s%2Fp/trust" {
+		t.Errorf("uri = %s", uri)
+	}
+	if len(body) != 1 || body[0]["type"] != "github" {
+		t.Fatalf("body = %+v, want a one-element array", body)
+	}
+}
+
+func TestAddTrustResendsBodyOnOTPChallenge(t *testing.T) {
+	var bodies []int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body []map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		bodies = append(bodies, len(body))
+		if r.Header.Get("npm-otp") != "123456" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"one-time pass required"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient("tok", "")
+	c.Registry = srv.URL
+	c.OnOTPRequired = func(context.Context) (string, error) { return "123456", nil }
+
+	config := map[string]any{"type": "github", "claims": map[string]any{"repository": "o/r"}, "permissions": []any{}}
+	if err := c.AddTrust(context.Background(), "@s/p", config); err != nil {
+		t.Fatalf("AddTrust: %v", err)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("requests = %d, want 2", len(bodies))
+	}
+	for i, n := range bodies {
+		if n != 1 {
+			t.Errorf("request %d body length = %d, want 1 (body must be resent)", i, n)
+		}
 	}
 }
 

@@ -134,6 +134,131 @@ func TestRunNPMOTPPrompt(t *testing.T) {
 	}
 }
 
+func TestApplyGitHub(t *testing.T) {
+	var createdBody, updatedBody map[string]any
+	var updatePath string
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/orgs/my-org/repos", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, `[{"full_name":"my-org/repo-a"},{"full_name":"my-org/repo-b"},{"full_name":"my-org/repo-c"}]`)
+	})
+	mux.HandleFunc("/repos/my-org/repo-a/rulesets", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, `[{"id":1,"name":"protect main","enforcement":"active","source_type":"Repository","rules":[{"type":"deletion"}]}]`)
+	})
+	mux.HandleFunc("/repos/my-org/repo-b/rulesets", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			createdBody = decodeBody(t, r)
+			w.WriteHeader(http.StatusCreated)
+			writeJSON(w, `{"id":2}`)
+			return
+		}
+		writeJSON(w, `[]`)
+	})
+	mux.HandleFunc("/repos/my-org/repo-c/rulesets", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, `[{"id":7,"name":"protect main","enforcement":"disabled","source_type":"Repository","rules":[{"type":"deletion"}]}]`)
+	})
+	mux.HandleFunc("/repos/my-org/repo-c/rulesets/7", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		updatePath = r.URL.Path
+		updatedBody = decodeBody(t, r)
+		writeJSON(w, `{}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	s := loadSpec(t, `{"github":[{"include_repos":["my-org/*"],"rulesets":[{"name":"protect main","enforcement":"active","rules":[{"type":"deletion"}]}]}]}`)
+	wr, err := Apply(context.Background(), s, Options{GitHubToken: "t", GitHubBaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	created, updated, unchanged := wr.Counts()
+	if created != 1 || updated != 1 || unchanged != 1 {
+		t.Fatalf("counts = %d/%d/%d, want 1/1/1 (%+v)", created, updated, unchanged, wr.Actions)
+	}
+	if updatePath != "/repos/my-org/repo-c/rulesets/7" {
+		t.Fatalf("update path = %q", updatePath)
+	}
+	if createdBody["enforcement"] != "active" || updatedBody["enforcement"] != "active" {
+		t.Fatalf("bodies not sent as desired: created=%+v updated=%+v", createdBody, updatedBody)
+	}
+}
+
+func TestApplyGitHubOrgRulesetErrors(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/orgs/my-org/repos", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, `[{"full_name":"my-org/repo"}]`)
+	})
+	mux.HandleFunc("/repos/my-org/repo/rulesets", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, `[{"id":1,"name":"protect main","enforcement":"disabled","source_type":"Organization","rules":[]}]`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	s := loadSpec(t, `{"github":[{"include_repos":["my-org/*"],"rulesets":[{"name":"protect main","enforcement":"active","rules":[]}]}]}`)
+	if _, err := Apply(context.Background(), s, Options{GitHubToken: "t", GitHubBaseURL: srv.URL}); err == nil {
+		t.Fatal("expected error for organization-level ruleset")
+	}
+}
+
+func TestApplyNPM(t *testing.T) {
+	var postedPkg string
+	var postedBody []map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/-/v1/search":
+			writeJSON(w, `{"objects":[{"package":{"name":"@s/pkg-a"}},{"package":{"name":"@s/pkg-b"}}],"total":2}`)
+		case r.URL.Path == "/-/package/@s/pkg-b/trust" && r.Method == http.MethodPost:
+			postedPkg = "@s/pkg-b"
+			_ = json.NewDecoder(r.Body).Decode(&postedBody)
+			writeJSON(w, `{}`)
+		case r.URL.Path == "/-/package/@s/pkg-a/trust":
+			writeJSON(w, `[{"id":"1","type":"github","claims":{"repository":"my-org/pkg-a","environment":"release"},"permissions":["createPackage"]}]`)
+		case r.URL.Path == "/-/package/@s/pkg-b/trust":
+			writeJSON(w, `[]`)
+		case r.URL.Path == "/@s/pkg-a":
+			writeJSON(w, `{"repository":{"url":"git+https://github.com/my-org/pkg-a.git"}}`)
+		case r.URL.Path == "/@s/pkg-b":
+			writeJSON(w, `{"repository":{"url":"git+https://github.com/my-org/pkg-b.git"}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	s := loadSpec(t, `{"npm":[{"include_packages":["@s/*"],"trust":[{"type":"github","claims":{"environment":"release"},"permissions":["createPackage"]}]}]}`)
+	wr, err := Apply(context.Background(), s, Options{NPMToken: "t", NPMRegistry: srv.URL})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	created, updated, unchanged := wr.Counts()
+	if created != 1 || updated != 0 || unchanged != 1 {
+		t.Fatalf("counts = %d/%d/%d, want 1/0/1 (%+v)", created, updated, unchanged, wr.Actions)
+	}
+	if postedPkg != "@s/pkg-b" || len(postedBody) != 1 {
+		t.Fatalf("posted pkg=%q body=%+v", postedPkg, postedBody)
+	}
+	claims, _ := postedBody[0]["claims"].(map[string]any)
+	if claims["repository"] != "my-org/pkg-b" {
+		t.Fatalf("repository not resolved from package.json: %+v", claims)
+	}
+}
+
+func decodeBody(t *testing.T, r *http.Request) map[string]any {
+	t.Helper()
+	defer r.Body.Close()
+	var m map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+		t.Fatalf("decode request body: %v", err)
+	}
+	return m
+}
+
 func TestRunMissingToken(t *testing.T) {
 	s := loadSpec(t, `{"github":[{"include_repos":["my-org/repo"],"rulesets":[{"name":"x"}]}]}`)
 	if _, err := Run(context.Background(), s, Options{}); err == nil {

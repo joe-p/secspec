@@ -75,20 +75,36 @@ func (c *Client) httpClient() *http.Client {
 
 // get performs a GET request. path may already include a query string.
 func (c *Client) get(ctx context.Context, path string, out any) error {
-	return c.do(ctx, http.MethodGet, path, out)
+	return c.do(ctx, http.MethodGet, path, nil, out)
 }
 
 // do performs a request, transparently answering 2FA challenges via
-// OnOTPRequired by retrying with a fresh npm-otp header.
-func (c *Client) do(ctx context.Context, method, path string, out any) error {
+// OnOTPRequired by retrying with a fresh npm-otp header. body, when non-nil, is
+// JSON-encoded and resent unchanged on each attempt.
+func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
 	u := strings.TrimRight(c.Registry, "/") + path
 
+	var payload []byte
+	if body != nil {
+		var err error
+		if payload, err = json.Marshal(body); err != nil {
+			return err
+		}
+	}
+
 	for attempt := 0; ; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, method, u, nil)
+		var reader io.Reader
+		if payload != nil {
+			reader = bytes.NewReader(payload)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, u, reader)
 		if err != nil {
 			return err
 		}
 		req.Header.Set("Accept", "application/json")
+		if payload != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
 		if c.Token != "" {
 			req.Header.Set("Authorization", "Bearer "+c.Token)
 		}
@@ -134,6 +150,12 @@ func (c *Client) do(ctx context.Context, method, path string, out any) error {
 
 		return &APIError{StatusCode: resp.StatusCode, Method: method, URL: u, Body: strings.TrimSpace(string(data))}
 	}
+}
+
+// AddTrust creates a single trusted publisher configuration for a package. The
+// API expects an array of configurations, so config is wrapped in one.
+func (c *Client) AddTrust(ctx context.Context, pkg string, config map[string]any) error {
+	return c.do(ctx, http.MethodPost, "/-/package/"+escapePackage(pkg)+"/trust", []map[string]any{config}, nil)
 }
 
 // needsOTP reports whether a response is the registry asking for a one-time

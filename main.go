@@ -26,7 +26,7 @@ Usage:
 Commands:
   diff     Print settings in the spec that do not match reality (exit 0 unless error)
   audit    Check settings and exit non-zero if any mismatch is found
-  write    Apply the spec (not implemented yet)
+  write    Create and update the settings defined in the spec (never deletes)
 
 Flags:
   --spec <path>          Path to the sec spec file (default "secspec.json")
@@ -134,8 +134,25 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 0
 
 	case "write":
-		fmt.Fprintln(stderr, "secspec: write is not implemented yet")
-		return 2
+		s, err := spec.Load(*specPath)
+		if err != nil {
+			fmt.Fprintln(stderr, "secspec:", err)
+			return 1
+		}
+		wr, err := engine.Apply(ctx, s, opts)
+		if err != nil {
+			fmt.Fprintln(stderr, "secspec:", err)
+			return 1
+		}
+		if *jsonOut {
+			if err := wr.WriteJSON(stdout); err != nil {
+				fmt.Fprintln(stderr, "secspec:", err)
+				return 1
+			}
+		} else {
+			wr.WriteText(stdout)
+		}
+		return 0
 
 	case "help":
 		fmt.Fprint(stdout, usage)
