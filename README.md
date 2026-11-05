@@ -1,6 +1,12 @@
 # SecSpec
 
-SecSpec is a CLI tool that helps audit and write security-related settings across various services. It currently supports npm and GitHub.
+SecSpec is a zero-dependency CLI tool that helps audit and write security-related settings across various services. It currently supports npm and GitHub.
+
+## Alternatives
+
+The closest alternative for GitHub specifically is [safe-settings](https://github.com/github-community-projects/safe-settings). safe-settings is a bit more abstract and complex than secspec. It also pulls in 12 external dependencies.
+
+An infrastructure-as-code framework, such as [terraform](https://developer.hashicorp.com/terraform) could also be used but that is also complex and pulls in many external dependencies.
 
 ## The Sec Spec
 
