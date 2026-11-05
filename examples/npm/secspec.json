@@ -1,0 +1,17 @@
+{
+  "npm": [
+    {
+      "include_packages": ["@joe-p/secspec-test-pkg"],
+      "trust": [
+        {
+          "type": "github",
+          "claims": {
+            "workflow_ref": { "file": "release.yml" },
+            "environment": "release"
+          },
+          "permissions": ["createStagedPackage"]
+        }
+      ]
+    }
+  ]
+}
