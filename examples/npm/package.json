@@ -1,0 +1,24 @@
+{
+  "name": "@joe-p/secspec-test-pkg",
+  "version": "1.0.2",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joe-p/secspec.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "^11.0.6",
+      "onFail": "download"
+    }
+  },
+  "type": "module"
+}
