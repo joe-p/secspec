@@ -22,7 +22,7 @@ Both read-only commands accept `--json` for a machine-readable report and `--spe
 
 ### Authentication
 
-GitHub requests use a token from `GH_TOKEN`/`GITHUB_TOKEN` (or `--github-token`); npm requests use `NPM_TOKEN` (or `--npm-token`). Endpoints can be overridden with `GITHUB_API_URL`/`--github-api-url` and `NPM_REGISTRY`/`--npm-registry`.
+GitHub requests use a token from `GH_TOKEN`/`GITHUB_TOKEN` (or `--github-token`). If none is set, `secspec` falls back to `gh auth token` when the [GitHub CLI](https://cli.github.com/) is installed and authenticated for the relevant host, so an existing `gh auth login` can be used without exporting a token. npm requests use `NPM_TOKEN` (or `--npm-token`). Endpoints can be overridden with `GITHUB_API_URL`/`--github-api-url` and `NPM_REGISTRY`/`--npm-registry`.
 
 npm's trusted-publisher endpoints are gated behind 2FA. When the registry asks for a one-time password and none was supplied, `secspec` prompts for a code on the terminal (`/dev/tty`, so it never consumes stdin or pollutes a `--json` report) and retries. To run unattended, set `NPM_OTP`/`--npm-otp`, or pass `--non-interactive` to make a 2FA challenge fail with an error instead of prompting. Prompting is also skipped automatically when no terminal is available.
 

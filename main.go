@@ -9,10 +9,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/joe-p/secspec/internal/engine"
 	"github.com/joe-p/secspec/internal/spec"
@@ -31,7 +34,7 @@ Commands:
 Flags:
   --spec <path>          Path to the sec spec file (default "secspec.json")
   --json                 Emit a JSON report
-  --github-token <tok>   GitHub token (default $GH_TOKEN, then $GITHUB_TOKEN)
+  --github-token <tok>   GitHub token (default $GH_TOKEN, $GITHUB_TOKEN, then gh auth token)
   --github-api-url <u>   GitHub API base URL (default $GITHUB_API_URL)
   --npm-token <tok>      npm token (default $NPM_TOKEN)
   --npm-registry <url>   npm registry URL (default $NPM_REGISTRY)
@@ -87,9 +90,18 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	githubBaseURL := firstNonEmpty(*githubAPIURL, os.Getenv("GITHUB_API_URL"))
+	githubAuthToken := firstNonEmpty(*githubToken, os.Getenv("GH_TOKEN"), os.Getenv("GITHUB_TOKEN"))
+	if githubAuthToken == "" {
+		// Fall back to the gh CLI's stored credentials when it is available and
+		// authenticated. This is best-effort; failures leave the token empty so
+		// the usual "no token" error is reported if GitHub settings are used.
+		githubAuthToken = ghAuthToken(ctx, githubHost(githubBaseURL))
+	}
+
 	opts := engine.Options{
-		GitHubToken:   firstNonEmpty(*githubToken, os.Getenv("GH_TOKEN"), os.Getenv("GITHUB_TOKEN")),
-		GitHubBaseURL: firstNonEmpty(*githubAPIURL, os.Getenv("GITHUB_API_URL")),
+		GitHubToken:   githubAuthToken,
+		GitHubBaseURL: githubBaseURL,
 		NPMToken:      firstNonEmpty(*npmToken, os.Getenv("NPM_TOKEN")),
 		NPMRegistry:   firstNonEmpty(*npmRegistry, os.Getenv("NPM_REGISTRY")),
 		NPMOTP:        firstNonEmpty(*npmOTP, os.Getenv("NPM_OTP")),
@@ -200,4 +212,36 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// ghAuthToken reads a token from the gh CLI for host. It returns an empty
+// string when gh is not installed, is not authenticated for host, or does not
+// answer in time.
+func ghAuthToken(ctx context.Context, host string) string {
+	if host == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "gh", "auth", "token", "--hostname", host).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// githubHost maps a GitHub API base URL to the hostname gh uses for its
+// credentials. An empty URL means github.com.
+func githubHost(apiURL string) string {
+	if apiURL == "" {
+		return "github.com"
+	}
+	u, err := url.Parse(apiURL)
+	if err != nil || u.Hostname() == "" {
+		return ""
+	}
+	if u.Hostname() == "api.github.com" {
+		return "github.com"
+	}
+	return u.Hostname()
 }

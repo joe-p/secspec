@@ -203,7 +203,7 @@ func applyNPM(ctx context.Context, client *npm.Client, targets *npmTargets, wr *
 
 func githubClient(opts Options) (*github.Client, error) {
 	if opts.GitHubToken == "" {
-		return nil, errors.New("spec defines github settings but no GitHub token is set (use GH_TOKEN, GITHUB_TOKEN, or --github-token)")
+		return nil, errors.New("spec defines github settings but no GitHub token is set (use GH_TOKEN, GITHUB_TOKEN, --github-token, or `gh auth login`)")
 	}
 	client := github.NewClient(opts.GitHubToken)
 	if opts.GitHubBaseURL != "" {
