@@ -36,7 +36,10 @@ func TestRunGitHub(t *testing.T) {
 		writeJSON(w, `[{"full_name":"my-org/repo-a"},{"full_name":"my-org/repo-b"}]`)
 	})
 	mux.HandleFunc("/repos/my-org/repo-a/rulesets", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, `[{"id":1,"name":"protect main","enforcement":"active","source_type":"Repository","rules":[{"type":"deletion"},{"type":"pull_request","parameters":{"required_approving_review_count":1,"dismiss_stale_reviews_on_push":true}}]}]`)
+		writeJSON(w, `[{"id":1,"name":"protect main","enforcement":"active","source_type":"Repository"}]`)
+	})
+	mux.HandleFunc("/repos/my-org/repo-a/rulesets/1", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, `{"id":1,"name":"protect main","enforcement":"active","source_type":"Repository","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}},"rules":[{"type":"deletion"},{"type":"pull_request","parameters":{"required_approving_review_count":1,"dismiss_stale_reviews_on_push":true}}]}`)
 	})
 	mux.HandleFunc("/repos/my-org/repo-b/rulesets", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, `[]`)
@@ -143,7 +146,10 @@ func TestApplyGitHub(t *testing.T) {
 		writeJSON(w, `[{"full_name":"my-org/repo-a"},{"full_name":"my-org/repo-b"},{"full_name":"my-org/repo-c"}]`)
 	})
 	mux.HandleFunc("/repos/my-org/repo-a/rulesets", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, `[{"id":1,"name":"protect main","enforcement":"active","source_type":"Repository","rules":[{"type":"deletion"}]}]`)
+		writeJSON(w, `[{"id":1,"name":"protect main","enforcement":"active","source_type":"Repository"}]`)
+	})
+	mux.HandleFunc("/repos/my-org/repo-a/rulesets/1", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, `{"id":1,"name":"protect main","enforcement":"active","source_type":"Repository","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}},"rules":[{"type":"deletion"}]}`)
 	})
 	mux.HandleFunc("/repos/my-org/repo-b/rulesets", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
@@ -155,9 +161,13 @@ func TestApplyGitHub(t *testing.T) {
 		writeJSON(w, `[]`)
 	})
 	mux.HandleFunc("/repos/my-org/repo-c/rulesets", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, `[{"id":7,"name":"protect main","enforcement":"disabled","source_type":"Repository","rules":[{"type":"deletion"}]}]`)
+		writeJSON(w, `[{"id":7,"name":"protect main","enforcement":"disabled","source_type":"Repository"}]`)
 	})
 	mux.HandleFunc("/repos/my-org/repo-c/rulesets/7", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			writeJSON(w, `{"id":7,"name":"protect main","enforcement":"disabled","source_type":"Repository","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}},"rules":[{"type":"deletion"}]}`)
+			return
+		}
 		if r.Method != http.MethodPut {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -193,7 +203,10 @@ func TestApplyGitHubOrgRulesetErrors(t *testing.T) {
 		writeJSON(w, `[{"full_name":"my-org/repo"}]`)
 	})
 	mux.HandleFunc("/repos/my-org/repo/rulesets", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, `[{"id":1,"name":"protect main","enforcement":"disabled","source_type":"Organization","rules":[]}]`)
+		writeJSON(w, `[{"id":1,"name":"protect main","enforcement":"disabled","source_type":"Organization"}]`)
+	})
+	mux.HandleFunc("/repos/my-org/repo/rulesets/1", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, `{"id":1,"name":"protect main","enforcement":"disabled","source_type":"Organization","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}},"rules":[]}`)
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()

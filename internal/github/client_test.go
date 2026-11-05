@@ -42,6 +42,41 @@ func TestCreateAndUpdateRuleset(t *testing.T) {
 	}
 }
 
+func TestListRulesetsFetchesDetails(t *testing.T) {
+	var detailHits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/my-org/repo/rulesets":
+			_, _ = w.Write([]byte(`[{"id":42,"name":"protect main","source_type":"Repository","enforcement":"active"}]`))
+		case "/repos/my-org/repo/rulesets/42":
+			detailHits++
+			_, _ = w.Write([]byte(`{"id":42,"name":"protect main","source_type":"Repository","enforcement":"active","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}},"rules":[{"type":"deletion"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClient("t")
+	c.BaseURL = srv.URL
+	rulesets, err := c.ListRulesets(context.Background(), "my-org", "repo")
+	if err != nil {
+		t.Fatalf("ListRulesets: %v", err)
+	}
+	if detailHits != 1 {
+		t.Fatalf("detail endpoint hits = %d, want 1", detailHits)
+	}
+	if len(rulesets) != 1 {
+		t.Fatalf("got %d rulesets, want 1", len(rulesets))
+	}
+	if _, ok := rulesets[0].Raw["conditions"]; !ok {
+		t.Fatal("expected conditions from the detail response")
+	}
+	if _, ok := rulesets[0].Raw["rules"]; !ok {
+		t.Fatal("expected rules from the detail response")
+	}
+}
+
 func TestRulesetMatches(t *testing.T) {
 	desired := decodeObject(t, `{"name":"x","enforcement":"active"}`)
 	match := Ruleset{Name: "x", Raw: decodeObject(t, `{"id":1,"name":"x","enforcement":"active"}`)}

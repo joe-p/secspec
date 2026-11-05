@@ -40,6 +40,17 @@ go test ./...
 `include_repos` - Array of strings that specify the repos these settings should apply to. Orgs must be fully specified, but repository names can contain the `*` wildcard.
 `rulesets` - Array of objects matching the body parameters of GitHub's `POST /repos/{owner}/{repo}/rulesets` ([API docs](https://docs.github.com/en/rest/repos/rules?apiVersion=2026-03-10#create-a-repository-ruleset)).
 
+Because rulesets target branches by default, GitHub requires `conditions.ref_name` and rejects a request without it with `Branch conditions missing`. Use `~DEFAULT_BRANCH` to match whatever the repository's default branch is, or list explicit refs such as `refs/heads/main`:
+
+```json
+"conditions": {
+  "ref_name": {
+    "include": ["~DEFAULT_BRANCH"],
+    "exclude": []
+  }
+}
+```
+
 #### NPM Specs
 
 `include_packages` - Array of strings that specify the packages these settings should apply to. Scope must be fully specified, but package names can contain the `*` wildcard.
